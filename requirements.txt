@@ -5,3 +5,4 @@ xgboost
 imbalanced-learn
 joblib
 uvicorn
+fastapi
