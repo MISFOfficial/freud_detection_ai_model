@@ -18,6 +18,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+if __name__ == "__main__":
+    # ✅ Needed for Render
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
 CSV_FILE_PATH = "data/transactions.csv"
 MODEL_PATH = "fraud_xgb_model.pkl"
 SCALER_PATH = "fraud_scaler.pkl"
