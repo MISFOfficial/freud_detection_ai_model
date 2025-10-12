@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import joblib
 from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 
 app = FastAPI()
 
@@ -35,6 +36,9 @@ else:
 DROP_COLS = ["transaction_id", "timestamp", "is_fraud"]
 
 
+if __name__ == "__main__":
+    # ✅ Needed for Render
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
 
 
 # always drop these
