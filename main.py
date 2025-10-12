@@ -8,6 +8,7 @@ app = FastAPI()
 
 # Allow frontend
 origins = ["http://localhost:3000"]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -31,8 +32,12 @@ if os.path.exists(CSV_FILE_PATH):
 else:
     TRAIN_COLUMNS = []
 
-DROP_COLS = ["transaction_id", "timestamp", "is_fraud"]  # always drop these
+DROP_COLS = ["transaction_id", "timestamp", "is_fraud"]
 
+
+
+
+# always drop these
 @app.post("/save-transaction")
 async def save_transaction(request: Request):
     try:
