@@ -1,128 +1,107 @@
-# train_model.py
-
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report
-# from imblearn.over_sampling import SMOTE # Remove SMOTE import
+from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 import joblib
 
-# ============================
-# 1️⃣ Load dataset
-# ============================
-df = pd.read_csv("data/transactions.csv")
-print("Initial data shape:", df.shape)
-print("Label distribution before fix:\n", df["is_fraud"].value_counts())
+# =============================
+# 1. LOAD DATA
+# =============================
+data = pd.read_csv("data/transactions.csv")
 
-# ============================
-# 2️⃣ Fix missing or invalid labels
-# ============================
-df["is_fraud"] = pd.to_numeric(df["is_fraud"], errors="coerce").fillna(0)
-df["is_fraud"] = df["is_fraud"].apply(lambda x: 1 if x > 0 else 0)
+print("✅ Data loaded successfully!")
+print("Shape:", data.shape)
+print(data.head())
 
-# If only one class exists, add a few fake fraud samples
-if len(df["is_fraud"].unique()) == 1:
-    print("⚠️ Only one class detected. Adding fake fraud samples for training...")
-    fake_frauds = df.sample(2, replace=True).copy()
-    fake_frauds["is_fraud"] = 1
-    df = pd.concat([df, fake_frauds], ignore_index=True)
+# =============================
+# 2. HANDLE MISSING VALUES
+# =============================
+data = data.dropna()
 
-print("Label distribution after fix:\n", df["is_fraud"].value_counts())
-
-# ============================
-# 3️⃣ Encode categorical features
-# ============================
-categorical_cols = df.select_dtypes(include=["object"]).columns.tolist()
-categorical_cols = [c for c in categorical_cols if c not in ["timestamp", "transaction_id"]]
-
-for col in categorical_cols:
+# =============================
+# 3. FEATURE ENCODING
+# =============================
+label_encoders = {}
+for column in data.select_dtypes(include=['object']).columns:
     le = LabelEncoder()
-    df[col] = le.fit_transform(df[col].astype(str))
+    data[column] = le.fit_transform(data[column])
+    label_encoders[column] = le
 
-# ============================
-# 4️⃣ Separate features and target
-# ============================
-X = df.drop(columns=["is_fraud", "transaction_id", "timestamp"], errors="ignore")
-y = df["is_fraud"]
+# =============================
+# 4. SPLIT FEATURES & TARGET
+# =============================
+X = data.drop(columns=["status"])
+y = data["status"]
 
-# ============================
-# 5️⃣ Balance dataset with SMOTE # Remove SMOTE step
-# ============================
-# minority_class_count = y.value_counts().min()
-# if minority_class_count > SMOTE().n_neighbors:
-#     smote = SMOTE(random_state=42)
-#     X_resampled, y_resampled = smote.fit_resample(X, y)
-#     print("Label distribution after SMOTE:\n", pd.Series(y_resampled).value_counts())
-# else:
-#     X_resampled, y_resampled = X, y
-#     print(f"⚠️ Not enough samples ({minority_class_count}) in the minority class for SMOTE (requires > {SMOTE().n_neighbors}). Skipping SMOTE.")
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# Use original data if SMOTE is skipped
-X_resampled, y_resampled = X, y
-print("SMOTE skipped.")
-
-
-# ============================
-# 6️⃣ Train-test split
-# ============================
-# Ensure stratification is possible with the current label distribution
-if len(y_resampled.unique()) > 1 and y_resampled.value_counts().min() > 1:
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_resampled, y_resampled, test_size=0.2, random_state=42, stratify=y_resampled
-    )
-else:
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_resampled, y_resampled, test_size=0.2, random_state=42
-    )
-    print("⚠️ Stratification not possible due to insufficient samples in one or more classes. Skipping stratification.")
-
-
-# ============================
-# 7️⃣ Feature scaling
-# ============================
-scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_test = scaler.transform(X_test)
-
-# ============================
-# 8️⃣ Train XGBoost model
-# ============================
+# =============================
+# 5. TRAIN MODEL
+# =============================
 model = XGBClassifier(
     n_estimators=200,
     learning_rate=0.1,
     max_depth=6,
     subsample=0.8,
     colsample_bytree=0.8,
-    random_state=42,
-    eval_metric="logloss",
-    use_label_encoder=False
+    random_state=42
 )
 
-print("🚀 Training model...")
 model.fit(X_train, y_train)
-print("✅ Model training complete")
 
-# ============================
-# 9️⃣ Evaluate
-# ============================
+# =============================
+# 6. EVALUATE MODEL
+# =============================
 y_pred = model.predict(X_test)
-accuracy = accuracy_score(y_test, y_pred)
-precision = precision_score(y_test, y_pred)
-recall = recall_score(y_test, y_pred)
-f1 = f1_score(y_test, y_pred)
 
-print("\nModel Performance:")
-print("-------------------")
-print(f"Accuracy:  {accuracy*100:.2f}%")
-print(f"Precision: {precision*100:.2f}%")
-print(f"Recall:    {recall*100:.2f}%")
-print(f"F1-Score:  {f1*100:.2f}%")
-print("\nDetailed Report:\n", classification_report(y_test, y_pred))
+acc = accuracy_score(y_test, y_pred)
+print("\n✅ Model Training Complete!")
+print("Accuracy:", round(acc * 100, 2), "%")
+print("\nClassification Report:\n", classification_report(y_test, y_pred))
+print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred))
 
-# ============================
-# 🔟 Save model and scaler
-# ============================
-joblib.dump(model, "fraud_xgb_model.pkl")
-joblib.dump(scaler, "fraud_scaler.pkl")
-print("\n✅ Model and scaler saved successfully.")
+# =============================
+# 7. SAVE MODEL & ENCODERS
+# =============================
+joblib.dump(model, "fraud_detection_model.pkl")
+joblib.dump(label_encoders, "label_encoders.pkl")
+print("\n✅ Model and encoders saved successfully!")
+
+# =============================
+# 8. PREDICT NEW TRANSACTION (Safe for unseen labels)
+# =============================
+def predict_new(data_dict):
+    df = pd.DataFrame([data_dict])
+    
+    # Apply same label encoding, unseen values get -1
+    for column, le in label_encoders.items():
+        if column in df:
+            df[column] = df[column].apply(
+                lambda x: le.transform([x])[0] if x in le.classes_ else -1
+            )
+    
+    prediction = model.predict(df)[0]
+    return "Fraud" if prediction == 1 else "Real"
+
+# =============================
+# 9. TEST EXAMPLE
+# =============================
+test_data = {
+    "avg_amount_30d": 0,
+    "merchant_id": "unknown_merchant_123",
+    "payment_method": "MOBILEBANKING",
+    "card_type": "BKASH-BKash",
+    "city": "Dhaka",
+    "device_browser": "Chromium 140",
+    "country": "Bangladesh",
+    "previous_txn_count_24h": 0,
+    "location": "37.4056,-122.0775",
+    "device_os": "Linux",
+    "user_id": "SMLBbqFsRCTtwGDsrPrLTZqeSJF3",
+    "amount": 4234,
+    "device_id": "ed6f1dc08530136442efbb1a9837eb67"
+}
+
+print("\nExample Prediction:", predict_new(test_data))
+
