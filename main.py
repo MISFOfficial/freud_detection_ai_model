@@ -3,13 +3,11 @@ import pandas as pd
 import os
 import joblib
 from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
 
 app = FastAPI()
 
 # Allow frontend
-origins = ["http://localhost:3000"]
-
+origins = ["http://localhost:3000", "*"]  # Allow all for testing
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -18,44 +16,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "fraud_xgb_model.pkl")
+ENCODER_PATH = os.path.join(BASE_DIR, "label_encoders.pkl")
+CSV_FILE_PATH = os.path.join(BASE_DIR, "data", "transactions.csv")
+
+# Load model and encoders
+if not os.path.exists(MODEL_PATH) or not os.path.exists(ENCODER_PATH):
+    raise FileNotFoundError("🚨 Model or encoders not found. Push them to the repo!")
+
+model = joblib.load(MODEL_PATH)
+label_encoders = joblib.load(ENCODER_PATH)
+
+# Get CSV headers
+if os.path.exists(CSV_FILE_PATH):
+    df_train_headers = pd.read_csv(CSV_FILE_PATH, nrows=1)
+    TRAIN_COLUMNS = [c for c in df_train_headers.columns if c != "status"]
+else:
+    TRAIN_COLUMNS = []
+
+DROP_COLS = ["transaction_id", "timestamp", "status"]
+
 @app.get("/ping")
 def ping():
     return {"status": "alive"}
 
-if __name__ == "__main__":
-    # ✅ Needed for Render
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-
-CSV_FILE_PATH = "data/transactions.csv"
-MODEL_PATH = "fraud_xgb_model.pkl"
-SCALER_PATH = "fraud_scaler.pkl"
-
-# Load model and scaler
-model = joblib.load(MODEL_PATH)
-scaler = joblib.load(SCALER_PATH)
-
-# Load CSV headers used during training
-if os.path.exists(CSV_FILE_PATH):
-    df_train_headers = pd.read_csv(CSV_FILE_PATH, nrows=1)
-    TRAIN_COLUMNS = [c for c in df_train_headers.columns if c != "is_fraud"]
-else:
-    TRAIN_COLUMNS = []
-
-DROP_COLS = ["transaction_id", "timestamp", "is_fraud"]
-
-
-if __name__ == "__main__":
-    # ✅ Needed for Render
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-
-
-# always drop these
 @app.post("/save-transaction")
 async def save_transaction(request: Request):
     try:
         data = await request.json()
         transaction = data[0] if isinstance(data, list) else data
-        print("✅ Received Transaction:", transaction)
 
         # Flatten devices
         flattened = {
@@ -67,16 +57,14 @@ async def save_transaction(request: Request):
         flattened.pop("devices", None)
 
         # Save to CSV
+        os.makedirs(os.path.dirname(CSV_FILE_PATH), exist_ok=True)
         file_exists = os.path.exists(CSV_FILE_PATH)
         df_existing = pd.read_csv(CSV_FILE_PATH) if file_exists else pd.DataFrame()
         df_existing = pd.concat([df_existing, pd.DataFrame([flattened])], ignore_index=True)
         df_existing.to_csv(CSV_FILE_PATH, index=False)
-        print("💾 Transaction saved successfully.")
 
-        # Prepare features exactly like training
+        # Prepare features
         features = pd.DataFrame([flattened])
-
-        # Drop unnecessary columns
         for col in DROP_COLS:
             if col in features.columns:
                 features.drop(columns=[col], inplace=True)
@@ -86,23 +74,30 @@ async def save_transaction(request: Request):
             if col not in features.columns:
                 features[col] = 0 if col in ["avg_amount_30d", "previous_txn_count_24h", "amount"] else ""
 
-        # Ensure column order matches training
+        # Ensure column order
         features = features[TRAIN_COLUMNS]
 
-        # Scale and predict
-        features_scaled = scaler.transform(features)
-        pred = model.predict(features_scaled)[0]
-        prob = model.predict_proba(features_scaled)[0][1] if hasattr(model, "predict_proba") else 0
+        # Encode categorical columns safely
+        for col, le in label_encoders.items():
+            if col in features.columns:
+                # Replace unseen labels with a default
+                features[col] = features[col].map(lambda x: le.transform([x])[0] if x in le.classes_ else -1)
 
-        # ✅ Send probability immediately
+        pred = model.predict(features)[0]
+        prob = model.predict_proba(features)[0][1] if hasattr(model, "predict_proba") else 0
+
         return {
             "message": "✅ Transaction saved successfully",
             "data": flattened,
             "is_fraud": bool(pred),
-            "fraud_probability": round(float(prob), 4),   # This is your immediate risk %
+            "fraud_probability": round(float(prob), 4),
             "fraud_message": "🚨 Fraud detected!" if pred else "✅ Transaction looks safe"
         }
 
     except Exception as e:
-        print("❌ Error while saving transaction or predicting:", e)
         return {"error": str(e)}
+
+# Only one uvicorn.run for Render
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
