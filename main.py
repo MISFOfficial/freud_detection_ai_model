@@ -1,78 +1,70 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-import pandas as pd
 import joblib
-import os
+import pandas as pd
 
-# =============================
-# Initialize FastAPI
-# =============================
-app = FastAPI(title="Fraud Detection API")
+app = FastAPI()
 
-# Allow frontend (adjust the origin for your frontend)
-origins = ["http://localhost:3000", "*"]
-
+# ===========================
+# CORS CONFIGURATION
+# ===========================
+# Allow your frontend to access the backend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000"
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["*"],   # allow GET, POST, etc.
     allow_headers=["*"],
 )
 
-# =============================
-# Load model and encoders
-# =============================
-MODEL_PATH = "fraud_detection_model.pkl"
-ENCODER_PATH = "label_encoders.pkl"
+# ===========================
+# LOAD MODEL AND ENCODERS
+# ===========================
+model = joblib.load("models/fraud_xgb_model.pkl")
+label_encoders = joblib.load("models/label_encoders.pkl")
 
-if not os.path.exists(MODEL_PATH) or not os.path.exists(ENCODER_PATH):
-    raise FileNotFoundError("🚨 Model or encoders not found!")
+# ===========================
+# ROUTES
+# ===========================
+@app.get("/")
+def home():
+    return {"message": "🚀 Fraud Detection API is running!"}
 
-model = joblib.load(MODEL_PATH)
-label_encoders = joblib.load(ENCODER_PATH)
 
-# =============================
-# Health check
-# =============================
 @app.get("/ping")
-def ping():
+async def ping():
     return {"status": "alive"}
 
-# =============================
-# Prediction endpoint
-# =============================
+
 @app.post("/predict")
-async def predict_transaction(request: Request):
-    try:
-        data = await request.json()
-        txn = data[0] if isinstance(data, list) else data
+async def predict(request: Request):
+    transaction = await request.json()
+    df = pd.DataFrame([transaction])
 
-        df = pd.DataFrame([txn])
+    # Encode categorical features
+    for col, le in label_encoders.items():
+        if col in df.columns:
+            df[col] = df[col].map(lambda s: s if s in le.classes_ else le.classes_[0])
+            df[col] = le.transform(df[col])
 
-        # Apply label encoding safely (unseen labels get -1)
-        for column, le in label_encoders.items():
-            if column in df:
-                df[column] = df[column].apply(
-                    lambda x: le.transform([x])[0] if x in le.classes_ else -1
-                )
+    # Ensure all columns expected by XGBoost exist
+    expected_cols = model.get_booster().feature_names
+    for col in expected_cols:
+        if col not in df.columns:
+            df[col] = 0
+    df = df[expected_cols]
 
-        # Predict
-        pred = model.predict(df)[0]
-        prob = model.predict_proba(df)[0][1] if hasattr(model, "predict_proba") else 0
+    # Predict
+    prediction = model.predict(df)[0]
+    result = "Fraudulent" if prediction == 1 else "Legitimate"
+    return {"prediction": result, "input": transaction}
 
-        return {
-            "is_fraud": bool(pred),
-            "fraud_probability": round(float(prob), 4),
-            "fraud_message": "🚨 Fraud detected!" if pred else "✅ Transaction looks safe"
-        }
-
-    except Exception as e:
-        return {"error": str(e)}
-
-# =============================
-# Run API
-# =============================
+# ===========================
+# RUN SERVER
+# ===========================
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
